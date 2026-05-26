@@ -6,6 +6,7 @@ import {
   getNextOrderFormDefaults,
   getProductCatalog,
   formatAllSheets,
+  updateBankConfig,
 } from "../api";
 import { runInBackground } from "../api/backgroundApi";
 import toast from "react-hot-toast";
@@ -27,6 +28,40 @@ const BANK_CONFIG_CACHE_KEY = "soanhang.bankConfig";
 const BANK_CONFIG_CACHE_TTL_MS = 30 * 60 * 1000;
 const ORDER_DRAFT_KEY = "soanhang.createOrderDraft.v1";
 const ORDER_DRAFT_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+const BANK_OPTIONS = [
+  "MBBank (Quân đội)",
+  "Vietcombank",
+  "Techcombank",
+  "ACB",
+  "BIDV",
+  "VPBank",
+  "TPBank",
+  "VietinBank",
+  "Sacombank",
+  "HDBank",
+  "Agribank",
+  "OCB",
+  "MSB (Hàng hải)",
+  "SHB (Sài Gòn - Hà Nội)",
+  "Eximbank",
+  "VIB",
+  "LPBank (Lộc Phát)",
+  "SCB (Sài Gòn)",
+  "NamABank",
+  "ABBANK (An Bình)",
+  "SeABank",
+  "KienLongBank",
+  "NCB (Quốc Dân)",
+  "BacABank",
+  "PGBank",
+  "BaoVietBank",
+  "PVcomBank",
+  "VietABank",
+  "VietBank",
+  "COOPBANK (Hợp tác xã)",
+  "CAKE by VPBank",
+  "ShinhanBank",
+];
 
 const readCachedOrderDefaults = () => {
   try {
@@ -527,6 +562,115 @@ function OrderSummary({ totalAmount, totalItems }) {
   );
 }
 
+function BankSettingsModal({
+  visible,
+  initialValue,
+  onClose,
+  onSubmit,
+  isSaving,
+}) {
+  const [form, setForm] = useState(() => ({
+    bankCode: String(initialValue?.bankCode || ""),
+    accountNumber: String(initialValue?.accountNumber || ""),
+    accountName: String(initialValue?.accountName || ""),
+  }));
+
+  useEffect(() => {
+    if (!visible) return;
+    setForm({
+      bankCode: String(initialValue?.bankCode || ""),
+      accountNumber: String(initialValue?.accountNumber || ""),
+      accountName: String(initialValue?.accountName || ""),
+    });
+  }, [initialValue, visible]);
+
+  if (!visible) return null;
+
+  return (
+    <div className="fixed inset-0 z-[9950] bg-slate-900/40 p-4" onClick={onClose}>
+      <div
+        className="mx-auto mt-[9vh] w-full max-w-md rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="text-base font-bold text-slate-900">
+            Sửa thông tin ngân hàng
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg px-2 py-1 text-slate-500 hover:bg-slate-100"
+          >
+            Đóng
+          </button>
+        </div>
+        <div className="mt-4 space-y-3">
+          <input
+            list="bank-options-datalist"
+            value={form.bankCode}
+            onChange={(e) =>
+              setForm((prev) => ({ ...prev, bankCode: e.target.value }))
+            }
+            placeholder="Ngân hàng"
+            className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-800 focus:border-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-700/20"
+          />
+          <datalist id="bank-options-datalist">
+            {BANK_OPTIONS.map((item) => (
+              <option key={`bank-opt-${item}`} value={item} />
+            ))}
+          </datalist>
+          <input
+            value={form.accountNumber}
+            onChange={(e) =>
+              setForm((prev) => ({
+                ...prev,
+                accountNumber: String(e.target.value || "").replace(/[^\d]/g, ""),
+              }))
+            }
+            placeholder="Số tài khoản"
+            className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-800 focus:border-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-700/20"
+          />
+          <input
+            value={form.accountName}
+            onChange={(e) =>
+              setForm((prev) => ({ ...prev, accountName: e.target.value }))
+            }
+            placeholder="Chủ tài khoản"
+            className="w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-800 focus:border-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-700/20"
+          />
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            Hủy
+          </button>
+          <button
+            type="button"
+            disabled={
+              isSaving ||
+              !String(form.bankCode || "").trim() ||
+              !String(form.accountNumber || "").trim()
+            }
+            onClick={() =>
+              onSubmit({
+                bankCode: String(form.bankCode || "").trim(),
+                accountNumber: String(form.accountNumber || "").trim(),
+                accountName: String(form.accountName || "").trim(),
+              })
+            }
+            className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 disabled:opacity-60"
+          >
+            {isSaving ? "Đang lưu..." : "Lưu thông tin"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function PaymentConfirmModal({
   visible,
@@ -544,6 +688,7 @@ function PaymentConfirmModal({
   isLoadingBankConfig,
   bankError,
   bankConfig,
+  openBankEditor,
   handlePrintPreview,
   handleConfirmPayment,
   isSubmitting,
@@ -685,6 +830,22 @@ function PaymentConfirmModal({
             )}
             {!isLoadingBankConfig && !bankError && bankConfig && (
               <div className="space-y-3">
+                <div className="px-3 pt-3">
+                  <p className="text-xs text-slate-600">
+                    {String(bankConfig.bankCode || "").trim() || "-"} •{" "}
+                    {String(bankConfig.accountNumber || "").trim() || "-"}
+                    {bankConfig.accountName
+                      ? ` • ${String(bankConfig.accountName).trim()}`
+                      : ""}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={openBankEditor}
+                    className="mt-2 rounded-lg border border-rose-200 bg-white px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                  >
+                    Sửa thông tin ngân hàng
+                  </button>
+                </div>
                 <div className="p-1 flex items-center justify-center">
                   {(() => {
                     const qrUrl = buildVietQrUrl({
@@ -799,6 +960,8 @@ export default function CreateOrderPage({ appMode = "web" }) {
   const [bankConfig, setBankConfig] = useState(null);
   const [bankError, setBankError] = useState("");
   const [isLoadingBankConfig, setIsLoadingBankConfig] = useState(false);
+  const [showBankSettingsModal, setShowBankSettingsModal] = useState(false);
+  const [isSavingBankSettings, setIsSavingBankSettings] = useState(false);
   const [newProduct, setNewProduct] = useState({
     id: "",
     tenSanPham: "",
@@ -909,6 +1072,39 @@ export default function CreateOrderPage({ appMode = "web" }) {
     setShowPaymentModal(false);
     setPaymentMethod("");
     setPendingOrder(null);
+  };
+
+  const handleOpenBankEditor = async () => {
+    await ensureBankConfig({ force: !bankConfig, silent: true });
+    setShowBankSettingsModal(true);
+  };
+
+  const handleSaveBankSettings = async (payload) => {
+    setIsSavingBankSettings(true);
+    try {
+      const res = await updateBankConfig(payload);
+      if (!res?.success) {
+        throw new Error(res?.message || "Không lưu được thông tin ngân hàng.");
+      }
+      const next = {
+        bankCode: String(res?.data?.bankCode || payload.bankCode || "").trim(),
+        accountNumber: String(
+          res?.data?.accountNumber || payload.accountNumber || "",
+        ).trim(),
+        accountName: String(
+          res?.data?.accountName || payload.accountName || "",
+        ).trim(),
+      };
+      setBankConfig(next);
+      writeCachedBankConfig(next);
+      setBankError("");
+      setShowBankSettingsModal(false);
+      toast.success(res?.message || "Đã cập nhật thông tin ngân hàng.");
+    } catch (err) {
+      toast.error(err?.message || "Không cập nhật được thông tin ngân hàng.");
+    } finally {
+      setIsSavingBankSettings(false);
+    }
   };
 
   const resetCreateOrderForm = ({ clearDraft = false } = {}) => {
@@ -1589,6 +1785,7 @@ export default function CreateOrderPage({ appMode = "web" }) {
       isLoadingBankConfig={isLoadingBankConfig}
       bankError={bankError}
       bankConfig={bankConfig}
+      openBankEditor={handleOpenBankEditor}
       handlePrintPreview={handlePrintPreview}
       handleConfirmPayment={handleConfirmPayment}
       isSubmitting={isSubmitting}
@@ -2300,6 +2497,16 @@ export default function CreateOrderPage({ appMode = "web" }) {
         </form>
       </div>
       {paymentModal}
+      <BankSettingsModal
+        visible={showBankSettingsModal}
+        initialValue={bankConfig}
+        isSaving={isSavingBankSettings}
+        onClose={() => {
+          if (isSavingBankSettings) return;
+          setShowBankSettingsModal(false);
+        }}
+        onSubmit={handleSaveBankSettings}
+      />
     </main>
   );
 }

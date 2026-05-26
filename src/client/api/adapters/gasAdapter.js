@@ -1114,6 +1114,36 @@ function normalizeBankKey_(value) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+function mapBankFieldByKey_(key) {
+  if (
+    key === "nganhang" ||
+    key === "bank" ||
+    key === "bankcode" ||
+    key === "manganhang"
+  ) {
+    return "bankCode";
+  }
+  if (
+    key === "stk" ||
+    key === "sotaikhoan" ||
+    key === "accountnumber" ||
+    key === "sotk"
+  ) {
+    return "accountNumber";
+  }
+  if (
+    key === "tenchutk" ||
+    key === "chutk" ||
+    key === "tentaikhoan" ||
+    key === "accountname" ||
+    key === "tenchutaikhoan" ||
+    key === "chutaikhoan"
+  ) {
+    return "accountName";
+  }
+  return "";
+}
+
 function getBankConfig() {
   return withSuccessCache_("read:bank_config", 45, function () {
     try {
@@ -1130,36 +1160,6 @@ function getBankConfig() {
       var bankCode = "";
       var accountNumber = "";
       var accountName = "";
-
-      function mapBankFieldByKey_(key) {
-        if (
-          key === "nganhang" ||
-          key === "bank" ||
-          key === "bankcode" ||
-          key === "manganhang"
-        ) {
-          return "bankCode";
-        }
-        if (
-          key === "stk" ||
-          key === "sotaikhoan" ||
-          key === "accountnumber" ||
-          key === "sotk"
-        ) {
-          return "accountNumber";
-        }
-        if (
-          key === "tenchutk" ||
-          key === "chutk" ||
-          key === "tentaikhoan" ||
-          key === "accountname" ||
-          key === "tenchutaikhoan" ||
-          key === "chutaikhoan"
-        ) {
-          return "accountName";
-        }
-        return "";
-      }
 
       // Mode 1: key-value theo cột (A=key, B=value)
       for (var i = 0; i < values.length; i++) {
@@ -1232,6 +1232,174 @@ function getBankConfig() {
       return { success: false, message: "Lỗi: " + e.message, data: null };
     }
   });
+}
+
+function updateBankConfig(payload) {
+  return runWithLockOrQueue_(
+    "UPDATE_BANK_CONFIG",
+    { payload: payload },
+    function () {
+      try {
+        var req = payload || {};
+        var bankCode = String(req.bankCode || "").trim();
+        var accountNumber = String(req.accountNumber || "").trim();
+        var accountName = String(req.accountName || "").trim();
+
+        if (!bankCode || !accountNumber) {
+          return {
+            success: false,
+            message: "Thiếu ngân hàng hoặc số tài khoản.",
+          };
+        }
+
+        var ss = SpreadsheetApp.getActiveSpreadsheet();
+        var sheet = ss.getSheetByName("BANK");
+        if (!sheet) sheet = ss.insertSheet("BANK");
+        if (!sheet) {
+          return { success: false, message: "Không thể tạo sheet BANK." };
+        }
+
+        var minRows = 3;
+        var minCols = 3;
+        if (sheet.getMaxRows() < minRows) {
+          sheet.insertRowsAfter(sheet.getMaxRows(), minRows - sheet.getMaxRows());
+        }
+        if (sheet.getMaxColumns() < minCols) {
+          sheet.insertColumnsAfter(
+            sheet.getMaxColumns(),
+            minCols - sheet.getMaxColumns(),
+          );
+        }
+
+        var lastRow = Math.max(sheet.getLastRow(), 1);
+        var lastCol = Math.max(sheet.getLastColumn(), 3);
+        var values = sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues();
+
+        var kvRows = {};
+        for (var i = 0; i < values.length; i++) {
+          var key = normalizeBankKey_(values[i][0]);
+          var field = mapBankFieldByKey_(key);
+          if (!field || kvRows[field]) continue;
+          var val = String(values[i][1] || "").trim();
+          var valAsKey = normalizeBankKey_(val);
+          if (mapBankFieldByKey_(valAsKey)) continue;
+          kvRows[field] = i + 1;
+        }
+
+        if (kvRows.bankCode && kvRows.accountNumber) {
+          sheet.getRange(kvRows.bankCode, 2).setValue(bankCode);
+          sheet.getRange(kvRows.accountNumber, 2).setValue(accountNumber);
+          if (kvRows.accountName) {
+            sheet.getRange(kvRows.accountName, 2).setValue(accountName);
+          } else {
+            var nameRow = Math.max(kvRows.bankCode, kvRows.accountNumber) + 1;
+            if (sheet.getMaxRows() < nameRow) {
+              sheet.insertRowsAfter(
+                sheet.getMaxRows(),
+                nameRow - sheet.getMaxRows(),
+              );
+            }
+            sheet.getRange(nameRow, 1).setValue("Tên chủ tài khoản");
+            sheet.getRange(nameRow, 2).setValue(accountName);
+          }
+          bumpAppCacheVersion_();
+          return {
+            success: true,
+            message: "Đã cập nhật thông tin ngân hàng.",
+            data: {
+              bankCode: bankCode,
+              accountNumber: accountNumber,
+              accountName: accountName,
+            },
+          };
+        }
+
+        var targetRow = 0;
+        var colMap = {};
+        var headerRowNumber = 0;
+        for (var r = 0; r < values.length; r++) {
+          colMap = {};
+          for (var c = 0; c < values[r].length; c++) {
+            var headerKey = normalizeBankKey_(values[r][c]);
+            var mapped = mapBankFieldByKey_(headerKey);
+            if (mapped && colMap[mapped] === undefined) colMap[mapped] = c + 1;
+          }
+          if (
+            colMap.bankCode !== undefined &&
+            colMap.accountNumber !== undefined
+          ) {
+            headerRowNumber = r + 1;
+            for (var d = r + 1; d < values.length; d++) {
+              var rowData = values[d];
+              var hasAny =
+                String(rowData[colMap.bankCode - 1] || "").trim() ||
+                String(rowData[colMap.accountNumber - 1] || "").trim() ||
+                (colMap.accountName === undefined
+                  ? ""
+                  : String(rowData[colMap.accountName - 1] || "").trim());
+              if (!hasAny) continue;
+              targetRow = d + 1;
+              break;
+            }
+            if (!targetRow) targetRow = r + 2;
+            break;
+          }
+        }
+
+        if (targetRow && colMap.bankCode !== undefined) {
+          sheet.getRange(targetRow, colMap.bankCode).setValue(bankCode);
+          sheet.getRange(targetRow, colMap.accountNumber).setValue(accountNumber);
+          var accountNameCol =
+            colMap.accountName === undefined
+              ? colMap.accountNumber + 1
+              : colMap.accountName;
+          if (sheet.getMaxColumns() < accountNameCol) {
+            sheet.insertColumnsAfter(
+              sheet.getMaxColumns(),
+              accountNameCol - sheet.getMaxColumns(),
+            );
+          }
+          sheet.getRange(targetRow, accountNameCol).setValue(accountName);
+          if (colMap.accountName === undefined) {
+            sheet
+              .getRange(headerRowNumber || targetRow - 1, accountNameCol)
+              .setValue("CHỦ TÀI KHOẢN");
+          }
+          bumpAppCacheVersion_();
+          return {
+            success: true,
+            message: "Đã cập nhật thông tin ngân hàng.",
+            data: {
+              bankCode: bankCode,
+              accountNumber: accountNumber,
+              accountName: accountName,
+            },
+          };
+        }
+
+        sheet.getRange(1, 1, 3, 2).setValues([
+          ["Ngân hàng", bankCode],
+          ["Số tài khoản", accountNumber],
+          ["Chủ tài khoản", accountName],
+        ]);
+        bumpAppCacheVersion_();
+        return {
+          success: true,
+          message: "Đã cập nhật thông tin ngân hàng.",
+          data: {
+            bankCode: bankCode,
+            accountNumber: accountNumber,
+            accountName: accountName,
+          },
+        };
+      } catch (e) {
+        return {
+          success: false,
+          message: "Lỗi: " + e.message,
+        };
+      }
+    },
+  );
 }
 
 function findProductRowByKey_(sheet, dataStartRow, tenSanPham, donVi) {
@@ -3840,8 +4008,6 @@ function createInventoryReceiptInternal_(payload) {
       PropertiesService.getScriptProperties().getProperty(
         "enable_inventory",
       ) === "true";
-    if (!isInventoryEnabled)
-      throw new Error("Tính năng quản lý kho đang bị tắt.");
 
     var receiptInfo = payload.receiptInfo || {};
     var products = payload.products || [];
@@ -3854,8 +4020,8 @@ function createInventoryReceiptInternal_(payload) {
       ss.getSheetByName("QUAN_LY_KHO") || ss.getSheetByName("QUẢN LÝ KHO");
     var sheetNhap = ss.getSheetByName("NHAP_HANG");
     var sheetNCC = ss.getSheetByName("CONG_NO_NCC");
+    var canUpdateKho = isInventoryEnabled && !!sheetKho;
 
-    if (!sheetKho) throw new Error("Chưa có sheet QUAN_LY_KHO");
     if (!sheetNhap) throw new Error("Chưa có sheet NHAP_HANG");
 
     try {
@@ -3868,7 +4034,7 @@ function createInventoryReceiptInternal_(payload) {
     }
 
     var khoValues = null;
-    if (sheetKho) {
+    if (canUpdateKho) {
       var lastKhoRow = sheetKho.getLastRow();
       if (lastKhoRow >= 3) {
         khoValues = sheetKho.getRange(3, 2, lastKhoRow - 2, 8).getValues();
@@ -4011,7 +4177,7 @@ function createInventoryReceiptInternal_(payload) {
     }
 
     // 3.4 Write QUAN_LY_KHO
-    if (khoUpdated && sheetKho && khoValues) {
+    if (khoUpdated && canUpdateKho && khoValues) {
       sheetKho.getRange(3, 2, khoValues.length, 8).setValues(khoValues);
     }
 
@@ -4479,6 +4645,7 @@ const getNextInventoryReceiptDefaultsClient = () =>
   call("getNextInventoryReceiptDefaults");
 const getProductCatalogClient = () => call("getProductCatalog");
 const getBankConfigClient = () => call("getBankConfig");
+const updateBankConfigClient = (payload) => call("updateBankConfig", payload);
 const updateProductCatalogItemClient = (payload) =>
   call("updateProductCatalogItem", payload);
 const createProductCatalogItemClient = (payload) =>
@@ -4513,6 +4680,7 @@ export const gasAdapter = {
   getNextInventoryReceiptDefaults: getNextInventoryReceiptDefaultsClient,
   getProductCatalog: getProductCatalogClient,
   getBankConfig: getBankConfigClient,
+  updateBankConfig: updateBankConfigClient,
   updateProductCatalogItem: updateProductCatalogItemClient,
   createProductCatalogItem: createProductCatalogItemClient,
   deleteProductCatalogItem: deleteProductCatalogItemClient,

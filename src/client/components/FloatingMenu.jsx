@@ -1,5 +1,10 @@
 import { useState, useEffect } from "react";
-import { useUser } from "../context";
+import {
+  DEVICE_TOKEN_SCOPE,
+  DEVICE_TOKEN_STORAGE_KEY,
+  useUser,
+} from "../context";
+import { revokeDeviceToken } from "../api/index.js";
 import brandLogo from "../assets/logo-dulia.jpg";
 
 const BRAND_LOGO_URL = brandLogo;
@@ -64,6 +69,19 @@ export default function FloatingMenu({
   const handleNav = (id) => {
     setIsOpen(false);
     onNavigate(id);
+  };
+
+  const handleLogout = async () => {
+    const token = String(localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) || "").trim();
+    if (token) {
+      try {
+        await revokeDeviceToken(token, DEVICE_TOKEN_SCOPE);
+      } catch (e) {
+        // Silent fallback to local logout.
+      }
+    }
+    localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
+    logout();
   };
 
   const posTabs = [
@@ -172,7 +190,7 @@ export default function FloatingMenu({
               {isPosMode ? "POS mode: Bật" : "POS mode: Tắt"}
             </button> */}
             <button
-              onClick={logout}
+              onClick={handleLogout}
               className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-red-600 font-semibold hover:bg-red-50 transition-colors text-sm"
             >
               Đăng xuất
@@ -248,7 +266,7 @@ export default function FloatingMenu({
             {isPosMode ? "POS mode: Bật" : "POS mode: Tắt"}
           </button>
           <button
-            onClick={logout}
+            onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-red-600 font-semibold hover:bg-red-50 transition-colors text-sm"
           >
             Đăng xuất

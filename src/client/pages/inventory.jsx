@@ -316,20 +316,25 @@ export default function InventoryPage({ user }) {
 
     const maPhieu = String(receiptInfo.maPhieu || "").trim();
 
-    setMaterials([]);
-    setReceiptInfo(createInitialReceiptInfo());
-
     runInBackground({
       apiCall: () => createInventoryReceipt(payload),
       successMessage: "Tạo phiếu nhập nguyên liệu thành công!",
       changeDescription: `Tạo phiếu nhập nguyên liệu \"${maPhieu}\"`,
       userName: user?.name || user?.email || "unknown",
+      optimistic: false,
+      showErrorOnFailure: true,
       onComplete: (result) => {
         setIsSubmitting(false);
+        if (result?.success) {
+          setMaterials([]);
+          setReceiptInfo(createInitialReceiptInfo());
+        }
         if (result?.success && !result?.queued) {
           formatAllSheets().catch(() => {});
         }
-        Promise.all([loadReceiptDefaults(), loadSuppliers()]).catch(() => {});
+        if (result?.success) {
+          Promise.all([loadReceiptDefaults(), loadSuppliers()]).catch(() => {});
+        }
       },
     });
   };

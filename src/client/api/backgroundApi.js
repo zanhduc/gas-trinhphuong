@@ -21,10 +21,14 @@ export function runInBackground({
   successMessage,
   changeDescription,
   userName,
+  optimistic = true,
+  showErrorOnFailure = false,
   onComplete,
 }) {
-  // 1. Show success toast immediately
-  toast.success(successMessage || "Thành công!")
+  // 1. Optional optimistic success toast
+  if (optimistic) {
+    toast.success(successMessage || "Thành công!")
+  }
 
   // 2. Run API in background — fire and forget
   Promise.resolve()
@@ -32,6 +36,12 @@ export function runInBackground({
     .then((result) => {
       // 3a. Log SUCCESS
       const isSuccess = result?.success !== false
+      if (isSuccess && !optimistic) {
+        toast.success(successMessage || "Thành công!")
+      }
+      if (!isSuccess && showErrorOnFailure) {
+        toast.error(result?.message || "Thao tác thất bại")
+      }
       logAction({
         userName: userName || "unknown",
         changeDescription: changeDescription || "",
@@ -45,6 +55,9 @@ export function runInBackground({
     })
     .catch((err) => {
       // 3b. Log ERROR
+      if (showErrorOnFailure) {
+        toast.error(err?.message || "Thao tác thất bại")
+      }
       logAction({
         userName: userName || "unknown",
         changeDescription: changeDescription || "",

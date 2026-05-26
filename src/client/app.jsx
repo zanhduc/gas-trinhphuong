@@ -11,7 +11,12 @@ import StatsPage from "./pages/stats";
 import PrintDiagnosticPage from "./pages/print-diagnostic";
 import FloatingMenu from "./components/FloatingMenu";
 import GlobalNoticeBanner from "./components/GlobalNoticeBanner";
-import { UserProvider, useUser } from "./context";
+import {
+  DEVICE_TOKEN_SCOPE,
+  DEVICE_TOKEN_STORAGE_KEY,
+  UserProvider,
+  useUser,
+} from "./context";
 import { Toaster } from "react-hot-toast";
 import { ensurePrintBridgeReady } from "./utils/printStrategy";
 import {
@@ -19,13 +24,22 @@ import {
   readAppMode,
   writeAppMode,
 } from "./utils/appMode";
-import { clearAllReadCache, getSyncVersion } from "./api";
+import {
+  clearAllReadCache,
+  clearReadCacheByKeys,
+  getInvalidationKeysForMutation,
+  loginWithDeviceToken,
+  getSyncVersion,
+} from "./api";
 import {
   isRealtimeSyncEnabled,
   startRealtimeSyncListener,
 } from "./realtime/firebaseSync";
 
-const REMOTE_SYNC_POLL_MS = 15000;
+const REMOTE_SYNC_POLL_MS = 90000;
+const REALTIME_INVALIDATION_DEBOUNCE_MS = 180;
+const REALTIME_GUARD_POLL_COOLDOWN_MS = 10000;
+const REALTIME_POLL_DEDUP_WINDOW_MS = 1500;
 
 const toBool = (value) => {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -109,6 +123,7 @@ function AppContent() {
   const [initDone, setInitDone] = useState(false);
   const [printParams, setPrintParams] = useState(null);
   const [appMode, setAppModeState] = useState(() => readAppMode());
+  const [autoLoginChecked, setAutoLoginChecked] = useState(false);
   const [syncNonce, setSyncNonce] = useState(0);
   const [realtimeActive, setRealtimeActive] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(() => {
@@ -116,7 +131,43 @@ function AppContent() {
     return document.visibilityState === "visible";
   });
   const lastSyncVersionRef = useRef("");
+  const pollSyncVersionNowRef = useRef(async () => {});
+  const lastGuardPollAtRef = useRef(0);
+  const syncVersionInFlightRef = useRef(false);
+  const lastRealtimeSignalAtRef = useRef(0);
+  const pendingInvalidationKeysRef = useRef(new Set());
+  const invalidationFlushTimerRef = useRef(null);
   const isPosMode = appMode === "pos";
+
+  const flushPendingInvalidation = useCallback(({ triggerRender = true } = {}) => {
+    const keys = Array.from(pendingInvalidationKeysRef.current);
+    pendingInvalidationKeysRef.current.clear();
+    if (invalidationFlushTimerRef.current) {
+      window.clearTimeout(invalidationFlushTimerRef.current);
+      invalidationFlushTimerRef.current = null;
+    }
+    if (!keys.length) return false;
+    clearReadCacheByKeys(keys);
+    if (triggerRender) {
+      setSyncNonce((v) => v + 1);
+    }
+    return true;
+  }, []);
+
+  const enqueueInvalidationKeys = useCallback((keys = []) => {
+    keys.forEach((k) => {
+      const normalized = String(k || "").trim();
+      if (normalized) pendingInvalidationKeysRef.current.add(normalized);
+    });
+    if (!pendingInvalidationKeysRef.current.size) return;
+
+    if (invalidationFlushTimerRef.current) {
+      window.clearTimeout(invalidationFlushTimerRef.current);
+    }
+    invalidationFlushTimerRef.current = window.setTimeout(() => {
+      flushPendingInvalidation();
+    }, REALTIME_INVALIDATION_DEBOUNCE_MS);
+  }, [flushPendingInvalidation]);
 
   const setAppMode = useCallback((nextMode) => {
     const next = writeAppMode(nextMode);
@@ -209,6 +260,48 @@ function AppContent() {
   }, [user]);
 
   useEffect(() => {
+    if (!initDone) return;
+    if (user) {
+      setAutoLoginChecked(true);
+      return;
+    }
+    if (autoLoginChecked) return;
+
+    let cancelled = false;
+    const tryAutoLogin = async () => {
+      const token = String(
+        localStorage.getItem(DEVICE_TOKEN_STORAGE_KEY) || "",
+      ).trim();
+      if (!token) {
+        if (!cancelled) setAutoLoginChecked(true);
+        return;
+      }
+      try {
+        const res = await loginWithDeviceToken(token, DEVICE_TOKEN_SCOPE);
+        if (cancelled) return;
+        if (res?.success && res?.data) {
+          const nextToken = String(res?.data?.deviceToken || token).trim();
+          if (nextToken) {
+            localStorage.setItem(DEVICE_TOKEN_STORAGE_KEY, nextToken);
+          }
+          setUser(res.data);
+        } else {
+          localStorage.removeItem(DEVICE_TOKEN_STORAGE_KEY);
+        }
+      } catch (_) {
+        // Silent to avoid blocking manual login fallback.
+      } finally {
+        if (!cancelled) setAutoLoginChecked(true);
+      }
+    };
+
+    tryAutoLogin();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoLoginChecked, initDone, setUser, user]);
+
+  useEffect(() => {
     if (!user || !isPosMode) return;
     if (!("wakeLock" in navigator) || !window.isSecureContext) return;
     let released = false;
@@ -249,12 +342,12 @@ function AppContent() {
       return;
     }
 
-    if (realtimeActive) return;
-
     let disposed = false;
 
-    const pollVersion = async () => {
-      if (document.visibilityState !== "visible") return;
+    const pollVersion = async ({ force = false } = {}) => {
+      if (!force && document.visibilityState !== "visible") return;
+      if (syncVersionInFlightRef.current) return;
+      syncVersionInFlightRef.current = true;
       try {
         const res = await getSyncVersion();
         if (disposed || !res?.success) return;
@@ -269,13 +362,23 @@ function AppContent() {
 
         if (nextVersion !== prevVersion) {
           lastSyncVersionRef.current = nextVersion;
+          // A realtime signal may have already refreshed this tab moments ago.
+          if (Date.now() - lastRealtimeSignalAtRef.current <= REALTIME_POLL_DEDUP_WINDOW_MS) {
+            return;
+          }
+          const didFlush = flushPendingInvalidation();
           clearAllReadCache();
-          setSyncNonce((v) => v + 1);
+          if (!didFlush) {
+            setSyncNonce((v) => v + 1);
+          }
         }
       } catch (_) {
         // Keep polling silent to avoid interrupting user flow.
+      } finally {
+        syncVersionInFlightRef.current = false;
       }
     };
+    pollSyncVersionNowRef.current = pollVersion;
 
     pollVersion();
     const timer = window.setInterval(pollVersion, REMOTE_SYNC_POLL_MS);
@@ -288,10 +391,11 @@ function AppContent() {
 
     return () => {
       disposed = true;
+      pollSyncVersionNowRef.current = async () => {};
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [user, realtimeActive]);
+  }, [user, flushPendingInvalidation]);
 
   useEffect(() => {
     if (!user) {
@@ -307,27 +411,59 @@ function AppContent() {
       return;
     }
 
+    let disposed = false;
+
     const stopListening = startRealtimeSyncListener({
       onReady: () => {
-        setRealtimeActive(true);
+        if (!disposed) setRealtimeActive(true);
       },
       onError: () => {
-        setRealtimeActive(false);
+        if (!disposed) setRealtimeActive(false);
       },
-      onRemoteSignal: () => {
+      onRemoteSignal: ({ mutation, invalidateKeys }) => {
+        if (disposed) return;
+        lastRealtimeSignalAtRef.current = Date.now();
+        const directKeys = Array.isArray(invalidateKeys)
+          ? invalidateKeys.filter((k) => typeof k === "string" && k.trim())
+          : [];
+        const keys = directKeys.length
+          ? directKeys
+          : getInvalidationKeysForMutation(mutation);
+        if (keys.length) {
+          enqueueInvalidationKeys(keys);
+          return;
+        }
+        const didFlush = flushPendingInvalidation();
         clearAllReadCache();
-        setSyncNonce((v) => v + 1);
+        if (!didFlush) {
+          setSyncNonce((v) => v + 1);
+        }
+        const now = Date.now();
+        if (
+          now - lastGuardPollAtRef.current >=
+          REALTIME_GUARD_POLL_COOLDOWN_MS
+        ) {
+          lastGuardPollAtRef.current = now;
+          pollSyncVersionNowRef.current({ force: true }).catch(() => {});
+        }
       },
     });
 
     return () => {
+      disposed = true;
+      flushPendingInvalidation({ triggerRender: false });
       if (typeof stopListening === "function") {
         stopListening();
       }
+      if (invalidationFlushTimerRef.current) {
+        window.clearTimeout(invalidationFlushTimerRef.current);
+        invalidationFlushTimerRef.current = null;
+      }
+      pendingInvalidationKeysRef.current.clear();
     };
-  }, [user, isPageVisible]);
+  }, [user, isPageVisible, enqueueInvalidationKeys, flushPendingInvalidation]);
 
-  if (!initDone) {
+  if (!initDone || (!user && !autoLoginChecked)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center">

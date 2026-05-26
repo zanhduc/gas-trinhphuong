@@ -769,6 +769,24 @@ const getBankConfig = async () => {
   };
 };
 
+const updateBankConfig = async (payload = {}) => {
+  await sleep(160);
+  const bankCode = String(payload.bankCode || "").trim();
+  const accountNumber = String(payload.accountNumber || "").trim();
+  const accountName = String(payload.accountName || "").trim();
+  if (!bankCode || !accountNumber) {
+    return { success: false, message: "Thiếu ngân hàng hoặc số tài khoản." };
+  }
+  MOCK_BANK_CONFIG.bankCode = bankCode;
+  MOCK_BANK_CONFIG.accountNumber = accountNumber;
+  MOCK_BANK_CONFIG.accountName = accountName;
+  return {
+    success: true,
+    message: "Đã cập nhật thông tin ngân hàng (Mock).",
+    data: { ...MOCK_BANK_CONFIG },
+  };
+};
+
 const updateProductCatalogItem = async (payload) => {
   await sleep(180);
   const p = payload || {};
@@ -1340,6 +1358,7 @@ const call = async (fnName, ...args) => {
     return getNextInventoryReceiptDefaults();
   if (fnName === "getProductCatalog") return getProductCatalog();
   if (fnName === "getBankConfig") return getBankConfig();
+  if (fnName === "updateBankConfig") return updateBankConfig(args[0]);
   if (fnName === "updateProductCatalogItem")
     return updateProductCatalogItem(args[0]);
   if (fnName === "createProductCatalogItem")
@@ -1583,6 +1602,7 @@ export const localAdapter = {
   getNextInventoryReceiptDefaults,
   getProductCatalog,
   getBankConfig,
+  updateBankConfig,
   updateProductCatalogItem,
   createProductCatalogItem,
   deleteProductCatalogItem,

@@ -26,6 +26,67 @@ const CACHE_KEYS = {
 };
 
 const READ_KEYS = Object.values(CACHE_KEYS);
+const INVALIDATION_KEYS = Object.freeze({
+  updateBankConfig: [CACHE_KEYS.bankConfig],
+  updateProductCatalogItem: [
+    CACHE_KEYS.productCatalog,
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.inventorySuggestions,
+  ],
+  createProductCatalogItem: [
+    CACHE_KEYS.productCatalog,
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.inventorySuggestions,
+  ],
+  deleteProductCatalogItem: [
+    CACHE_KEYS.productCatalog,
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.inventorySuggestions,
+  ],
+  updateDebtCustomer: [
+    CACHE_KEYS.debtCustomers,
+    CACHE_KEYS.orderHistory,
+    CACHE_KEYS.customerCatalog,
+  ],
+  settleAllDebtCustomers: [CACHE_KEYS.debtCustomers, CACHE_KEYS.orderHistory],
+  createOrder: [
+    CACHE_KEYS.orderHistory,
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.debtCustomers,
+    CACHE_KEYS.productCatalog,
+    CACHE_KEYS.inventorySuggestions,
+    CACHE_KEYS.customerCatalog,
+  ],
+  createInventoryReceipt: [
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.receiptHistory,
+    CACHE_KEYS.supplierDebts,
+    CACHE_KEYS.supplierCatalog,
+    CACHE_KEYS.productCatalog,
+    CACHE_KEYS.inventorySuggestions,
+  ],
+  updateOrder: [
+    CACHE_KEYS.orderHistory,
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.debtCustomers,
+    CACHE_KEYS.productCatalog,
+    CACHE_KEYS.inventorySuggestions,
+    CACHE_KEYS.customerCatalog,
+  ],
+  deleteOrder: [
+    CACHE_KEYS.orderHistory,
+    CACHE_KEYS.inventory,
+    CACHE_KEYS.debtCustomers,
+    CACHE_KEYS.customerCatalog,
+  ],
+  updateSupplierDebt: [CACHE_KEYS.supplierDebts, CACHE_KEYS.supplierCatalog],
+});
+
+export function getInvalidationKeysForMutation(mutationName) {
+  const key = String(mutationName || "").trim();
+  const keys = INVALIDATION_KEYS[key];
+  return Array.isArray(keys) ? [...keys] : [];
+}
 const BG_SPARSE_15M = {
   backgroundMode: "stale-only",
   refreshAfterMs: 15 * 60 * 1000,
@@ -61,6 +122,14 @@ setMutationSuccessHook(({ mutationName }) => {
 export const call = adapter.call;
 export const helloServer = adapter.helloServer;
 export const login = adapter.login;
+export const loginWithDeviceToken = (deviceToken, appScope = "") =>
+  typeof adapter.loginWithDeviceToken === "function"
+    ? adapter.loginWithDeviceToken(deviceToken, appScope)
+    : Promise.resolve({ success: false, message: "not_supported" });
+export const revokeDeviceToken = (deviceToken, appScope = "") =>
+  typeof adapter.revokeDeviceToken === "function"
+    ? adapter.revokeDeviceToken(deviceToken, appScope)
+    : Promise.resolve({ success: true });
 export const getUserInfo = adapter.getUserInfo;
 export const getDemoAccounts = adapter.getDemoAccounts;
 export const getGlobalNotice = adapter.getGlobalNotice;
@@ -79,6 +148,10 @@ export const getBankConfig = createLocalFirstReader(
   CACHE_KEYS.bankConfig,
   adapter.getBankConfig,
   BG_SPARSE_60M,
+);
+export const updateBankConfig = createMutationWithInvalidation(
+  adapter.updateBankConfig,
+  [CACHE_KEYS.bankConfig],
 );
 export const updateProductCatalogItem = createMutationWithInvalidation(
   adapter.updateProductCatalogItem,
@@ -217,4 +290,7 @@ export const downloadInvoicePDF = adapter.downloadInvoicePDF;
 export const logAction = adapter.logAction;
 export const clearAllReadCache = () => {
   clearCacheByKeys(READ_KEYS);
+};
+export const clearReadCacheByKeys = (keys = []) => {
+  clearCacheByKeys(keys);
 };
